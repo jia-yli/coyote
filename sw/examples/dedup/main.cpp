@@ -52,6 +52,9 @@ double vctr_avg(std::vector<double> const& v) {
     return 1.0 * std::accumulate(v.begin(), v.end(), 0LL) / v.size();
 }
 
+void * set_write_instr(void * startPtr, int startLBA, int LBALen);
+void * set_nop(void * startPtr);
+
 /**
  * @brief Throughput and latency tests, read and write
  * 
@@ -63,27 +66,33 @@ int main(int argc, char *argv[])
     // ---------------------------------------------------------------
     boost::program_options::options_description programDescription("Options:");
     programDescription.add_options()
-    ("nPage,n", boost::program_options::value<uint32_t>(), "Number of Pages")
-    ("dupFactor,d", boost::program_options::value<uint32_t>(), "Duplication factor")
-    ("throuFactor,t", boost::program_options::value<uint32_t>(), "Store throughput factor")
-    ("nBenchRun,r", boost::program_options::value<uint32_t>(), "Number of bench run");
+    ("nPage,n", boost::program_options::value<uint32_t>()->default_value(8192), "Number of Pages")
+    ("dupRatio,d", boost::program_options::value<double>()->default_value(0.5), "Duplication ratio amont all inputs")
+    ("throuFactor,t", boost::program_options::value<uint32_t>()->default_value(8), "Store throughput factor")
+    ("nBenchRun,r", boost::program_options::value<uint32_t>()->default_value(1), "Number of bench run");
     boost::program_options::variables_map commandLineArgs;
     boost::program_options::store(boost::program_options::parse_command_line(argc, argv, programDescription), commandLineArgs);
     boost::program_options::notify(commandLineArgs);
     
     uint32_t n_page = commandLineArgs["nPage"].as<uint32_t>();
-    uint32_t dup_factor = commandLineArgs["dupFactor"].as<uint32_t>();
+    double dupRatio = commandLineArgs["dupRatio"].as<double>();
     uint32_t throu_factor = commandLineArgs["throuFactor"].as<uint32_t>();
     uint32_t n_bench_run = commandLineArgs["nBenchRun"].as<uint32_t>();
+    uint32_t uniquePageNum = (uint32_t) (((double) n_page) * dupRatio);
+    // uint32_t dup_factor = n_page/uniquePageNum
+    uint32_t writeOpNum = 16;
+    uint32_t pagePerOp = n_page/writeOpNum;
 
     assert(n_page%16==0 && "n_page should be an multiple of 16.");
-    assert(n_page%dup_factor==0 && "n_page should be an multiple of dup_factor.");
+    assert(n_page%writeOpNum==0 && "n_page should be an multiple of writeOpNum.");
+    // assert(n_page%dup_factor==0 && "n_page should be an multiple of dup_factor.");
 
     uint32_t pg_size = 4096; // change me for 16K
+    uint32_t total_instr_pg_num = (writeOpNum + pg_size - 1) / pg_size; // data transfer is done in pages
     uint32_t huge_pg_size = 2 * 1024 * 1024;
     uint32_t pg_size_ratio = huge_pg_size / pg_size;
-    uint32_t n_hugepage_req = (n_page + pg_size_ratio -1) / pg_size_ratio;
-    uint32_t n_hugepage_rsp = (n_page * 16 + huge_pg_size-1)/huge_pg_size;
+    uint32_t n_hugepage_req = ((n_page + total_instr_pg_num) * pg_size + huge_pg_size -1) / huge_pg_size; // roundup, number of hugepage for n page
+    uint32_t n_hugepage_rsp = (n_page * 64 + huge_pg_size-1) / huge_pg_size; // roundup, number of huge page for 64B response from each page
 
     std::cout << "Page allocation: n_hugepage_req=" << n_hugepage_req << "\tn_hugepage_rsp:" << n_hugepage_rsp << std::endl;
 
@@ -93,23 +102,46 @@ int main(int argc, char *argv[])
     void* rspMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_rsp});
 
     // random initialize pages with dup_factor
-    char* reqMemChar = (char*) reqMem;
+    char* uniquePageBuffer = malloc(uniquePageNum*pg_size) // only unique pages
+    char* inputPageBuffer = malloc(n_page*pg_size) // with dup, all input pages
     int urand=open("/dev/urandom", O_RDONLY);
-    int res = read(urand, reqMem, pg_size*n_page/dup_factor);
-    for (int j = 1; j < dup_factor; j++) {
-        memcpy(reqMemChar+j*pg_size*n_page/dup_factor, reqMemChar, pg_size*n_page/dup_factor);
+    // int res = read(urand, reqMem, pg_size*uniquePageNum);
+    // get unique page data
+    int res = read(urand, uniquePageBuffer, pg_size*uniquePageNum);
+    // construct all input pages with duplication
+    for (int j = 1; j < n_page; j++) {
+        // policy: 1,...,N,1,...,N
+        int copy_page_pointer = j / uniquePageNum;
+        memcpy(inputPageBuffer + j * pg_size, uniquePageBuffer + copy_page_pointer * pg_size, pg_size);
     }
     close(urand);
+    free(uniquePageBuffer);
 
-    // double check
-    for (int j = 1; j < dup_factor; j++) {
-        assert(memcmp(reqMem, reqMem+j*pg_size*n_page/dup_factor, pg_size*n_page/dup_factor)==0);
+    void* initPtr = reqMem;
+    for (int instrIdx = 0; instrIdx < total_instr_pg_num * pg_size; instrIdx ++){
+      if (instrIdx < writeOpNum){
+        // set instr: write instr
+        initPtr = set_write_instr(initPtr, 2*instrIdx*pagePerOp, pagePerOp);
+        // set pages
+        char* initPtrChar = (char*) initPtr;
+        memcpy(initPtrChar, inputPageBuffer + instrIdx * pagePerOp * pg_size, pagePerOp * pg_size);
+        initPtrChar = initPtrChar + pagePerOp * pg_size;
+        initPtr = (void*) initPtrChar;
+      } else {
+        // set Insrt: nop
+        initPtr = set_nop(initPtr);
+      }
     }
+
+    // // double check
+    // for (int j = 1; j < dup_factor; j++) {
+    //     assert(memcmp(reqMem, reqMem+j*pg_size*uniquePageNum, pg_size*uniquePageNum)==0);
+    // }
     
     // init dedup module
     cproc.setCSR(1, static_cast<uint32_t>(CTLR::INITEN));
     cproc.setCSR(pg_size, static_cast<uint32_t>(CTLR::LEN));
-    cproc.setCSR(n_page, static_cast<uint32_t>(CTLR::CNT)); // 64 pages in each command batch
+    cproc.setCSR(n_page + total_instr_pg_num, static_cast<uint32_t>(CTLR::CNT)); // 64 pages in each command batch
     cproc.setCSR(cproc.getCpid(), static_cast<uint32_t>(CTLR::PID));
     cproc.setCSR(throu_factor, static_cast<uint32_t>(CTLR::FACTORTHROU));
 
@@ -141,15 +173,73 @@ int main(int argc, char *argv[])
     std::cout << "WRDONE:" << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) << std::endl; 
 
     /** parse and print the page response */
-    uint64_t* rspMemUInt64 = (uint64_t*) rspMem;
+    uint32_t* rspMemUInt32 = (uint32_t*) rspMem;
     for (int i=0; i < n_page; i++) {
-        bool isExist = (rspMemUInt64[i*2] & 0x01) ? true : false;
-        uint64_t pgIdx = rspMemUInt64[i*2] >> 1;
-        uint64_t pgPtr = rspMemUInt64[i*2+1];
-        std::cout << "pgIdx:" << pgIdx << "\tpgPtr:" << pgPtr << "\tisExist:" << isExist << std::endl;
+        uint32_t sha3Hash_0   = rspMemUInt32[i*16 + 0];
+        uint32_t sha3Hash_1   = rspMemUInt32[i*16 + 1];
+        uint32_t sha3Hash_2   = rspMemUInt32[i*16 + 2];
+        uint32_t sha3Hash_3   = rspMemUInt32[i*16 + 3];
+        uint32_t sha3Hash_4   = rspMemUInt32[i*16 + 4];
+        uint32_t sha3Hash_5   = rspMemUInt32[i*16 + 5];
+        uint32_t sha3Hash_6   = rspMemUInt32[i*16 + 6];
+        uint32_t sha3Hash_7   = rspMemUInt32[i*16 + 7];
+        uint32_t refCount     = rspMemUInt32[i*16 + 8];
+        uint32_t SSDLBA       = rspMemUInt32[i*16 + 9];
+        uint32_t hostLBAStart = rspMemUInt32[i*16 + 10];
+        uint32_t hostLBALen   = rspMemUInt32[i*16 + 11];
+        uint32_t pad_0        = rspMemUInt32[i*16 + 12];
+        uint32_t pad_1        = rspMemUInt32[i*16 + 13];
+        uint32_t pad_2        = rspMemUInt32[i*16 + 14];
+        uint32_t execStatus   = rspMemUInt32[i*16 + 15];
+        bool isExist = (execStatus & (1 << 29)) ? false : true; // 1 -> op exec -> new page -> not exist
+        uint32_t opCode = (execStatus>>30);
+        std::cout << "hostLBAStart:" << hostLBAStart << "\trefCount:" << refCount << "\tisExist:" << isExist << std::endl;
     }
 
     cproc.clearCompleted();
 
     return EXIT_SUCCESS;
+}
+
+// instr = 512 bit = 32bit x 16
+void * set_write_instr(void * startPtr, int startLBA, int LBALen){
+    uint32_t * startPtrUInt32 = (uint32_t *) startPtr;
+    startPtrUInt32[0]  = LBALen;
+    startPtrUInt32[1]  = startLBA;
+    startPtrUInt32[2]  = 0;
+    startPtrUInt32[3]  = 0;
+    startPtrUInt32[4]  = 0;
+    startPtrUInt32[5]  = 0;
+    startPtrUInt32[6]  = 0;
+    startPtrUInt32[7]  = 0;
+    startPtrUInt32[8]  = 0;
+    startPtrUInt32[9]  = 0;
+    startPtrUInt32[10] = 0;
+    startPtrUInt32[11] = 0;
+    startPtrUInt32[12] = 0;
+    startPtrUInt32[13] = 0;
+    startPtrUInt32[14] = 0;
+    startPtrUInt32[15] = 1 << 30;
+    return (void *) (startPtrUInt32 + 16);
+}
+
+void * set_nop(void * startPtr){
+    uint32_t * startPtrUInt32 = (uint32_t *) startPtr;
+    startPtrUInt32[0]  = 0;
+    startPtrUInt32[1]  = 0;
+    startPtrUInt32[2]  = 0;
+    startPtrUInt32[3]  = 0;
+    startPtrUInt32[4]  = 0;
+    startPtrUInt32[5]  = 0;
+    startPtrUInt32[6]  = 0;
+    startPtrUInt32[7]  = 0;
+    startPtrUInt32[8]  = 0;
+    startPtrUInt32[9]  = 0;
+    startPtrUInt32[10] = 0;
+    startPtrUInt32[11] = 0;
+    startPtrUInt32[12] = 0;
+    startPtrUInt32[13] = 0;
+    startPtrUInt32[14] = 0;
+    startPtrUInt32[15] = 0;
+    return (void *) (startPtrUInt32 + 16);
 }

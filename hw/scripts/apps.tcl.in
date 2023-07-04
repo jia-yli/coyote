@@ -11,7 +11,7 @@ switch $cfg(apps) {
 
     "dedup" {
         puts "App: Deduplication"
-        set dedup_dir "$::env(HOME)/Workspace/hw/dedup"
+        set dedup_dir "$::env(HOME)/projects/dedup"
         add_files "$dedup_dir/generated_rtl/dedup_$cfg(apps_config).v"
     }
 
