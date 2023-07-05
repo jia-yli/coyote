@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <iomanip>
+// #include <string>
+#include <sstream>
 #ifdef EN_AVX
 #include <x86intrin.h>
 #endif
@@ -52,7 +54,7 @@ double vctr_avg(std::vector<double> const& v) {
     return 1.0 * std::accumulate(v.begin(), v.end(), 0LL) / v.size();
 }
 
-void * set_write_instr(void * startPtr, int startLBA, int LBALen);
+void * set_write_instr(void * startPtr, int startLBA, int LBALen, bool printEn);
 void * set_nop(void * startPtr);
 
 /**
@@ -66,9 +68,10 @@ int main(int argc, char *argv[])
     // ---------------------------------------------------------------
     boost::program_options::options_description programDescription("Options:");
     programDescription.add_options()
-    ("nPage,n", boost::program_options::value<uint32_t>()->default_value(8192), "Number of Pages")
+    ("nPage,n", boost::program_options::value<uint32_t>()->default_value(32), "Number of Pages")
     ("dupRatio,d", boost::program_options::value<double>()->default_value(0.5), "Duplication ratio amont all inputs")
     ("throuFactor,t", boost::program_options::value<uint32_t>()->default_value(8), "Store throughput factor")
+    ("writeOpNum,w", boost::program_options::value<uint32_t>()->default_value(8), "Write op Num")
     ("nBenchRun,r", boost::program_options::value<uint32_t>()->default_value(1), "Number of bench run");
     boost::program_options::variables_map commandLineArgs;
     boost::program_options::store(boost::program_options::parse_command_line(argc, argv, programDescription), commandLineArgs);
@@ -80,7 +83,7 @@ int main(int argc, char *argv[])
     uint32_t n_bench_run = commandLineArgs["nBenchRun"].as<uint32_t>();
     uint32_t uniquePageNum = (uint32_t) (((double) n_page) * dupRatio);
     // uint32_t dup_factor = n_page/uniquePageNum
-    uint32_t writeOpNum = 16;
+    uint32_t writeOpNum = commandLineArgs["writeOpNum"].as<uint32_t>();
     uint32_t pagePerOp = n_page/writeOpNum;
 
     assert(n_page%16==0 && "n_page should be an multiple of 16.");
@@ -102,29 +105,56 @@ int main(int argc, char *argv[])
     void* rspMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_rsp});
 
     // random initialize pages with dup_factor
-    char* uniquePageBuffer = malloc(uniquePageNum*pg_size) // only unique pages
-    char* inputPageBuffer = malloc(n_page*pg_size) // with dup, all input pages
+    char* uniquePageBuffer = (char*) malloc(uniquePageNum*pg_size); // only unique pages
+    assert(uniquePageBuffer != NULL);
+    char* inputPageBuffer = (char*) malloc(n_page*pg_size); // with dup, all input pages
+    assert(inputPageBuffer != NULL);
     int urand=open("/dev/urandom", O_RDONLY);
     // int res = read(urand, reqMem, pg_size*uniquePageNum);
     // get unique page data
-    int res = read(urand, uniquePageBuffer, pg_size*uniquePageNum);
+    // int res = read(urand, uniquePageBuffer, pg_size*uniquePageNum);
+    for(int i = 0; i < uniquePageNum * pg_size; i++){
+      uniquePageBuffer[i] = (char) (i/pg_size);
+    }
     // construct all input pages with duplication
-    for (int j = 1; j < n_page; j++) {
+    for (int j = 0; j < n_page; j++) {
         // policy: 1,...,N,1,...,N
-        int copy_page_pointer = j / uniquePageNum;
+        int copy_page_pointer = j % uniquePageNum;
         memcpy(inputPageBuffer + j * pg_size, uniquePageBuffer + copy_page_pointer * pg_size, pg_size);
     }
     close(urand);
     free(uniquePageBuffer);
 
+    // golden res
+    int* goldenPgIsExec = (int*) malloc(n_page * sizeof(int));
+    int* goldenPgRefCount = (int*) malloc(n_page * sizeof(int));
+    int* goldenPgIdx = (int*) malloc(n_page * sizeof(int));
+
+    for (int pgIdx = 0; pgIdx < n_page; pgIdx ++){
+      goldenPgIsExec[pgIdx] = (pgIdx < uniquePageNum) ? 1 : 0;
+      // goldenPgRefCount[pgIdx] = pgIdx / uniquePageNum + 1;
+      goldenPgIdx[pgIdx] = (pgIdx / pagePerOp) * pagePerOp + pgIdx;
+      goldenPgIdx[pgIdx] = pgIdx;
+    }
+
     void* initPtr = reqMem;
     for (int instrIdx = 0; instrIdx < total_instr_pg_num * pg_size; instrIdx ++){
       if (instrIdx < writeOpNum){
         // set instr: write instr
-        initPtr = set_write_instr(initPtr, 2*instrIdx*pagePerOp, pagePerOp);
+        // initPtr = set_write_instr(initPtr, instrIdx*pagePerOp, pagePerOp, false);
+        initPtr = set_write_instr(initPtr, 2*instrIdx*pagePerOp, pagePerOp, false);
+        
         // set pages
         char* initPtrChar = (char*) initPtr;
         memcpy(initPtrChar, inputPageBuffer + instrIdx * pagePerOp * pg_size, pagePerOp * pg_size);
+        // for(int i = 0; i < pagePerOp * pg_size; i++){
+        //   // assert ((int)*initPtrChar == 1);
+        //   if((int)*initPtrChar != '\1'){
+        //     // std::cout << (int) *initPtrChar << std::endl;
+        //     std::cout << instrIdx << std::endl;
+        //     break;
+        //   }
+        // }
         initPtrChar = initPtrChar + pagePerOp * pg_size;
         initPtr = (void*) initPtrChar;
       } else {
@@ -138,8 +168,11 @@ int main(int argc, char *argv[])
     //     assert(memcmp(reqMem, reqMem+j*pg_size*uniquePageNum, pg_size*uniquePageNum)==0);
     // }
     
-    // init dedup module
-    cproc.setCSR(1, static_cast<uint32_t>(CTLR::INITEN));
+    // init dedup module: if not init done, init
+    if (!cproc.getCSR(static_cast<uint32_t>(CTLR::INITDONE))){
+      cproc.setCSR(1, static_cast<uint32_t>(CTLR::INITEN));
+    }
+    // cproc.setCSR(1, static_cast<uint32_t>(CTLR::INITEN));
     cproc.setCSR(pg_size, static_cast<uint32_t>(CTLR::LEN));
     cproc.setCSR(n_page + total_instr_pg_num, static_cast<uint32_t>(CTLR::CNT)); // 64 pages in each command batch
     cproc.setCSR(cproc.getCpid(), static_cast<uint32_t>(CTLR::PID));
@@ -191,18 +224,43 @@ int main(int argc, char *argv[])
         uint32_t pad_1        = rspMemUInt32[i*16 + 13];
         uint32_t pad_2        = rspMemUInt32[i*16 + 14];
         uint32_t execStatus   = rspMemUInt32[i*16 + 15];
-        bool isExist = (execStatus & (1 << 29)) ? false : true; // 1 -> op exec -> new page -> not exist
+        bool isExec = (execStatus & (1 << 29)) ? true : false; // 1 -> op exec -> new page -> not exist
         uint32_t opCode = (execStatus>>30);
-        std::cout << "hostLBAStart:" << hostLBAStart << "\trefCount:" << refCount << "\tisExist:" << isExist << std::endl;
+        // std::cout << opCode << std::endl;
+        // std::cout << pad_0 << " " << pad_1 << " " << pad_2 << std::endl;
+        std::cout << "hostLBAStart:" << hostLBAStart << "\thostLBALen:" << hostLBALen << "\tisExec:" << isExec << std::endl;
+        std::cout << "refCount:" << refCount << "\tSSDLBA:" << SSDLBA << std::endl;
+ 
+        std::stringstream SHA3sstream;
+        for (int sha3PieceIdx = 7; sha3PieceIdx >= 0; sha3PieceIdx --){
+          SHA3sstream << std::setfill ('0') << std::setw(sizeof(uint32_t)*2) << std::hex << rspMemUInt32[i*16 + sha3PieceIdx];
+        }
+        std::cout << "SHA3:" << SHA3sstream.str() << std::endl;
+        
+        // assert(refCount == goldenPgRefCount[i]);
+        // assert(hostLBAStart == goldenPgIdx[i]);
+        assert(hostLBALen == 1);
+        // assert(isExec == goldenPgIsExec[i]);
+        assert(opCode == 1);
+
+        // std::cout << refCount     << ' ' << goldenPgRefCount[i] << std::endl;
+        std::cout << hostLBAStart << ' ' << goldenPgIdx[i]      << std::endl;
+        // std::cout << hostLBALen   << ' ' << 1                   << std::endl;
+        // std::cout << isExec       << ' ' << goldenPgIsExec[i]   << std::endl;
+        // std::cout << opCode       << ' ' << 1                   << std::endl;
     }
 
     cproc.clearCompleted();
+    free(inputPageBuffer);
+    free(goldenPgIsExec);
+    free(goldenPgRefCount);
+    free(goldenPgIdx);
 
     return EXIT_SUCCESS;
 }
 
 // instr = 512 bit = 32bit x 16
-void * set_write_instr(void * startPtr, int startLBA, int LBALen){
+void * set_write_instr(void * startPtr, int startLBA, int LBALen, bool printEn = false){
     uint32_t * startPtrUInt32 = (uint32_t *) startPtr;
     startPtrUInt32[0]  = LBALen;
     startPtrUInt32[1]  = startLBA;
@@ -220,6 +278,9 @@ void * set_write_instr(void * startPtr, int startLBA, int LBALen){
     startPtrUInt32[13] = 0;
     startPtrUInt32[14] = 0;
     startPtrUInt32[15] = 1 << 30;
+    if(printEn){
+      std::cout << "Instr: write, startLBA:" << startLBA << "\tLBALen:" << LBALen << std::endl;
+    }
     return (void *) (startPtrUInt32 + 16);
 }
 

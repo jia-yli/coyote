@@ -51,8 +51,9 @@ resize_pblock pblock_dedupCore -add CLOCKREGION_X0Y0:CLOCKREGION_X7Y7
 add_cells_to_pblock pblock_dedupCore [get_cells [list inst_dynamic/inst_dedup/dedupCore]]
 
 create_pblock pblock_sha3Grp
-resize_pblock pblock_sha3Grp -add CLOCKREGION_X0Y2:CLOCKREGION_X7Y3
-resize_pblock pblock_sha3Grp -add CLOCKREGION_X0Y4:CLOCKREGION_X7Y7
+# resize_pblock pblock_sha3Grp -add CLOCKREGION_X0Y2:CLOCKREGION_X7Y3
+# resize_pblock pblock_sha3Grp -add CLOCKREGION_X0Y4:CLOCKREGION_X7Y7
+resize_pblock pblock_sha3Grp -add CLOCKREGION_X0Y2:CLOCKREGION_X7Y7
 add_cells_to_pblock pblock_sha3Grp [get_cells [list inst_dynamic/inst_dedup/dedupCore/hashTableSS/sha3Grp]]
 
 create_pblock pblock_1
