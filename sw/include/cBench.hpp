@@ -81,6 +81,7 @@ public:
         //DBG2("Number of bench runs: " << num_runs);
 
         // Average time
+        std::cout << "get avg time, total number of execution: " << num_runs << std::endl;
         auto begin_time = std::chrono::high_resolution_clock::now();
         for (int i = 0; i < num_runs; ++i) {
             func(args...);
@@ -92,6 +93,7 @@ public:
 
         // Latency distribution
         if(distribute) {       
+            std::cout << "get dist, total number of execution: " << kNumRunsDist << std::endl;
             for (int i = 0; i < kNumRunsDist; ++i) {
                 begin_time = std::chrono::high_resolution_clock::now();
                     func(args...);
@@ -102,7 +104,7 @@ public:
             }
 
             sortBench();
-            printOut(); 
+            // printOut(); 
         }
     }
 

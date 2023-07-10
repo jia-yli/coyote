@@ -22,8 +22,8 @@ BASE_PATH="/home/jiayli/projects/coyote"
 #     PROGRAM_FPGA=0
 # else
     PROGRAM_FPGA=1
-    # BIT_PATH="hw/build/bitstreams/cyt_top"
-    BIT_PATH="../dedup/bitstreams/cyt_top"
+    BIT_PATH="hw/build/bitstreams/cyt_top"
+    # BIT_PATH="../dedup/bitstreams/cyt_top"
 # fi
 
 # if [ -z "$3" ]; then
@@ -36,7 +36,7 @@ BASE_PATH="/home/jiayli/projects/coyote"
 ##
 ## Server IDs (u55c)
 ##
-SERVID=6
+SERVID=$(hostname -s | tail -c 3)
 
 BOARDSN=(XFL1QOQ1ATTYA XFL1O5FZSJEIA XFL1QGKZZ0HVA XFL11JYUKD4IA XFL1EN2C02C0A XFL1NMVTYXR4A XFL1WI3AMW4IA XFL1ELZXN2EGA XFL1W5OWZCXXA XFL1H2WA3T53A)
 

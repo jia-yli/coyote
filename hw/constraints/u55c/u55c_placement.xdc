@@ -65,7 +65,7 @@ resize_pblock pblock_SHA3ResQueue -add CLOCKREGION_X2Y1:CLOCKREGION_X3Y5
 add_cells_to_pblock pblock_SHA3ResQueue [get_cells [list inst_dynamic/inst_dedup/dedupCore/hashTableSS/SHA3ResQueue]]
 
 create_pblock pblock_lookupEngine
-resize_pblock pblock_lookupEngine -add CLOCKREGION_X0Y0:CLOCKREGION_X2Y1
+resize_pblock pblock_lookupEngine -add CLOCKREGION_X0Y0:CLOCKREGION_X3Y1
 add_cells_to_pblock pblock_lookupEngine [get_cells [list inst_dynamic/inst_dedup/dedupCore/hashTableSS/lookupEngine]]
 
 create_pblock pblock_pgWriterSS
