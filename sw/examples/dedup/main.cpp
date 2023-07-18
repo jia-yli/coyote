@@ -127,7 +127,7 @@ int main(int argc, char *argv[])
     cProcess cproc(targetRegion, getpid());
     void* iniMem = NULL;
     if (hashTableIni) {
-      void* iniMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_ini});
+      iniMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_ini});
     }
     void* reqMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_req});
     void* rspMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_rsp});
@@ -137,6 +137,7 @@ int main(int argc, char *argv[])
     assert(uniquePageBuffer != NULL);
     char* inputPageBuffer = (char*) malloc(n_page*pg_size); // with dup, all input pages
     assert(inputPageBuffer != NULL);
+    cout << "Preparing unique page data" << endl;
     int urand=open("/dev/urandom", O_RDONLY);
     // int res = read(urand, reqMem, pg_size*uniquePageNum);
     // get unique page data
@@ -165,6 +166,7 @@ int main(int argc, char *argv[])
     }
 
     // hash table init
+    cout << "Preparing hashtable content initializer" << endl;
     void* initPtr = iniMem;
     if (hashTableIni) {
       for (int instrIdx = 0; instrIdx < pg_size; instrIdx ++){
@@ -176,8 +178,9 @@ int main(int argc, char *argv[])
           // set pages
           char* initPtrChar = (char*) initPtr;
           for (int pgIdx = 0; pgIdx < uniquePageNum; pgIdx ++){
-            // memcpy(initPtrChar + pgIdx * pg_size, uniquePageBuffer + (rand() % uniquePageNum) * pg_size, pg_size);
-            memcpy(initPtrChar + pgIdx * pg_size, uniquePageBuffer + pgIdx * pg_size, pg_size);
+            int randPgIdx = (rand() % uniquePageNum);
+            memcpy(initPtrChar + pgIdx * pg_size, uniquePageBuffer + randPgIdx * pg_size, pg_size);
+            // memcpy(initPtrChar + pgIdx * pg_size, uniquePageBuffer + pgIdx * pg_size, pg_size);
           }
           initPtrChar = initPtrChar + uniquePageNum * pg_size;
           initPtr = (void*) initPtrChar;
@@ -190,6 +193,7 @@ int main(int argc, char *argv[])
 
     // request for throughput
     initPtr = reqMem;
+    cout << "Preparing request for throughput" << endl;
     for (int instrIdx = 0; instrIdx < total_instr_pg_num * (pg_size / instr_size); instrIdx ++){
       if (instrIdx < writeOpNum){
         // cout << instrIdx << " at " << (instrIdx - total_instr_pg_num * pg_size + writeOpNum);
@@ -218,6 +222,7 @@ int main(int argc, char *argv[])
     }
 
     // request for latency
+    // cout << "Preparing request for latency" << endl;
     // initPtr = reqMem;
     // pagePerOp = 16;
     // n_page = 16;
