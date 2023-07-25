@@ -105,10 +105,10 @@ int main(int argc, char *argv[])
   uint32_t pg_per_huge_pg = huge_pg_size / pg_size;
   uint32_t instr_size = 64; // 64B = 512b per instr
   uint32_t instr_per_page = pg_size/instr_size;
-  // uint32_t ht_nbucket = (1 << 17);
-  // uint32_t ht_size = (1 << 20);
-  uint32_t ht_nbucket = (1 << 13);
-  uint32_t ht_size = (1 << 16);
+  uint32_t ht_nbucket = (1 << 15);
+  uint32_t ht_size = (1 << 18);
+  // uint32_t ht_nbucket = (1 << 13);
+  // uint32_t ht_size = (1 << 16);
 
   // drived parameters
   uint32_t total_page_unique_count = (((uint32_t) (hash_table_fullness * ht_size) + 15)/16) * 16;
@@ -402,69 +402,73 @@ int main(int argc, char *argv[])
     cproc.freeMem(benchCleanReqMem);
     cproc.freeMem(benchCleanRspMem);
 
-    uint32_t benchmark_insert_pg_num = batch_gc_page_unique_count;
-    uint32_t benchmark_insert_instr_pg_num = (1 * instr_size + pg_size - 1) / pg_size; // data transfer is done in pages
-    uint32_t n_hugepage_bench_insert_req = ((benchmark_insert_pg_num + benchmark_insert_instr_pg_num) * pg_size + huge_pg_size - 1) / huge_pg_size;
-    uint32_t n_hugepage_bench_insert_rsp = (benchmark_insert_pg_num * 64 + huge_pg_size - 1) / huge_pg_size;
-    void* benchInsertReqMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_bench_insert_req});
-    void* benchInsertRspMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_bench_insert_rsp});
+    if (batch_gc_page_unique_count > 0){
+      uint32_t benchmark_insert_pg_num = batch_gc_page_unique_count;
+      uint32_t benchmark_insert_instr_pg_num = (1 * instr_size + pg_size - 1) / pg_size; // data transfer is done in pages
+      uint32_t n_hugepage_bench_insert_req = ((benchmark_insert_pg_num + benchmark_insert_instr_pg_num) * pg_size + huge_pg_size - 1) / huge_pg_size;
+      uint32_t n_hugepage_bench_insert_rsp = (benchmark_insert_pg_num * 64 + huge_pg_size - 1) / huge_pg_size;
+      void* benchInsertReqMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_bench_insert_req});
+      void* benchInsertRspMem = cproc.getMem({CoyoteAlloc::HOST_2M, n_hugepage_bench_insert_rsp});
 
-    initPtr = benchInsertReqMem;
-    for (int instrIdx = 0; instrIdx < instr_per_page * benchmark_insert_instr_pg_num; instrIdx ++){
-      if (instrIdx < 1){
-        // set instr: write instr
-        initPtr = set_write_instr(initPtr, 100000, benchmark_insert_pg_num, false);
+      initPtr = benchInsertReqMem;
+      for (int instrIdx = 0; instrIdx < instr_per_page * benchmark_insert_instr_pg_num; instrIdx ++){
+        if (instrIdx < 1){
+          // set instr: write instr
+          initPtr = set_write_instr(initPtr, 100000, benchmark_insert_pg_num, false);
 
-        // set pages
-        char* initPtrChar = (char*) initPtr;
-        for (int pgIdx = 0; pgIdx < benchmark_insert_pg_num; pgIdx ++){
-          int randPgIdx = benchmark_insert_page_idx_lst[pgIdx];
-          memcpy(initPtrChar + pgIdx * pg_size, all_unique_page_buffer + randPgIdx * pg_size, pg_size);
+          // set pages
+          char* initPtrChar = (char*) initPtr;
+          for (int pgIdx = 0; pgIdx < benchmark_insert_pg_num; pgIdx ++){
+            int randPgIdx = benchmark_insert_page_idx_lst[pgIdx];
+            memcpy(initPtrChar + pgIdx * pg_size, all_unique_page_buffer + randPgIdx * pg_size, pg_size);
+          }
+          initPtrChar = initPtrChar + benchmark_insert_pg_num * pg_size;
+          initPtr = (void*) initPtrChar;
+        } else {
+          // set Insrt: nop
+          initPtr = set_nop(initPtr);
         }
-        initPtrChar = initPtrChar + benchmark_insert_pg_num * pg_size;
-        initPtr = (void*) initPtrChar;
-      } else {
-        // set Insrt: nop
-        initPtr = set_nop(initPtr);
       }
+
+      // golden res
+      int* benchInsertGoldenPgIsExec = (int*) malloc(benchmark_insert_pg_num * sizeof(int));
+      int* benchInsertGoldenPgRefCount = (int*) malloc(benchmark_insert_pg_num * sizeof(int));
+      int* benchInsertGoldenPgIdx = (int*) malloc(benchmark_insert_pg_num * sizeof(int));
+
+      for (int pgIdx = 0; pgIdx < benchmark_insert_pg_num; pgIdx ++){
+        benchInsertGoldenPgIsExec[pgIdx] = 1;
+        benchInsertGoldenPgRefCount[pgIdx] = 1;
+        benchInsertGoldenPgIdx[pgIdx] = 100000 + pgIdx;
+      }
+
+      cproc.setCSR(reinterpret_cast<uint64_t>(benchInsertReqMem), static_cast<uint32_t>(CTLR::RDHOSTADDR));
+      cproc.setCSR(reinterpret_cast<uint64_t>(benchInsertRspMem), static_cast<uint32_t>(CTLR::WRHOSTADDR));
+      cproc.setCSR(benchmark_insert_pg_num + benchmark_insert_instr_pg_num, static_cast<uint32_t>(CTLR::CNT)); // 16 pages in each command batch
+      cproc.setCSR(1, static_cast<uint32_t>(CTLR::START));
+      sleep(1);
+
+      std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << benchmark_insert_pg_num + benchmark_insert_instr_pg_num << std::endl;
+      std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << benchmark_insert_pg_num << std::endl; 
+
+      ofstream outfile2_3;
+      std::stringstream outfile_name2_3;
+      outfile_name2_3 << output_dir << "/resp_" << timeStamp.str() << "_step2_3.txt";
+      outfile2_3.open(outfile_name2_3.str(), ios::out);
+
+      cout << "parsing the results" << endl;
+      allPassed = parse_response(benchmark_insert_pg_num, benchInsertRspMem, benchInsertGoldenPgIsExec, benchInsertGoldenPgRefCount, benchInsertGoldenPgIdx, 1, outfile2_3);
+      cout << "all page passed?: " << (allPassed ? "True" : "False") << endl;
+      outfile2_3.close();
+
+      free(benchInsertGoldenPgIsExec);
+      free(benchInsertGoldenPgRefCount);
+      free(benchInsertGoldenPgIdx);
+      cproc.freeMem(benchInsertReqMem);
+      cproc.freeMem(benchInsertRspMem);
     }
-
-    // golden res
-    int* benchInsertGoldenPgIsExec = (int*) malloc(benchmark_insert_pg_num * sizeof(int));
-    int* benchInsertGoldenPgRefCount = (int*) malloc(benchmark_insert_pg_num * sizeof(int));
-    int* benchInsertGoldenPgIdx = (int*) malloc(benchmark_insert_pg_num * sizeof(int));
-
-    for (int pgIdx = 0; pgIdx < benchmark_insert_pg_num; pgIdx ++){
-      benchInsertGoldenPgIsExec[pgIdx] = 1;
-      benchInsertGoldenPgRefCount[pgIdx] = 1;
-      benchInsertGoldenPgIdx[pgIdx] = 100000 + pgIdx;
-    }
-
-    cproc.setCSR(reinterpret_cast<uint64_t>(benchInsertReqMem), static_cast<uint32_t>(CTLR::RDHOSTADDR));
-    cproc.setCSR(reinterpret_cast<uint64_t>(benchInsertRspMem), static_cast<uint32_t>(CTLR::WRHOSTADDR));
-    cproc.setCSR(benchmark_insert_pg_num + benchmark_insert_instr_pg_num, static_cast<uint32_t>(CTLR::CNT)); // 16 pages in each command batch
-    cproc.setCSR(1, static_cast<uint32_t>(CTLR::START));
-    sleep(1);
-
-    std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << benchmark_insert_pg_num + benchmark_insert_instr_pg_num << std::endl;
-    std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << benchmark_insert_pg_num << std::endl; 
-
-    ofstream outfile2_3;
-    std::stringstream outfile_name2_3;
-    outfile_name2_3 << output_dir << "/resp_" << timeStamp.str() << "_step2_3.txt";
-    outfile2_3.open(outfile_name2_3.str(), ios::out);
-
-    cout << "parsing the results" << endl;
-    allPassed = parse_response(benchmark_insert_pg_num, benchInsertRspMem, benchInsertGoldenPgIsExec, benchInsertGoldenPgRefCount, benchInsertGoldenPgIdx, 1, outfile2_3);
-    cout << "all page passed?: " << (allPassed ? "True" : "False") << endl;
-    outfile2_3.close();
-
-    free(benchInsertGoldenPgIsExec);
-    free(benchInsertGoldenPgRefCount);
-    free(benchInsertGoldenPgIdx);
-    cproc.freeMem(benchInsertReqMem);
-    cproc.freeMem(benchInsertRspMem);
   }
+
+  cout << endl << "benchmarking done, avg time used: " << accumulate(times_lst.begin(), times_lst.end(), 0.0) / times_lst.size() << endl;
 
   cout << endl << "Step3: clean up all remaining pages" << endl;
   if (total_page_unique_count > 0){

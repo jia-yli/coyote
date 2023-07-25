@@ -108,10 +108,10 @@ int main(int argc, char *argv[])
   uint32_t pg_per_huge_pg = huge_pg_size / pg_size;
   uint32_t instr_size = 64; // 64B = 512b per instr
   uint32_t instr_per_page = pg_size/instr_size;
-  // uint32_t ht_nbucket = (1 << 17);
-  // uint32_t ht_size = (1 << 20);
-  uint32_t ht_nbucket = (1 << 13);
-  uint32_t ht_size = (1 << 16);
+  uint32_t ht_nbucket = (1 << 15);
+  uint32_t ht_size = (1 << 18);
+  // uint32_t ht_nbucket = (1 << 13);
+  // uint32_t ht_size = (1 << 16);
 
   // drived parameters
   uint32_t total_old_page_unique_count = (((uint32_t) (hash_table_fullness * ht_size) + 15)/16) * 16;
@@ -463,6 +463,8 @@ int main(int argc, char *argv[])
     cproc.freeMem(benchCleanReqMem);
     cproc.freeMem(benchCleanRspMem);
   }
+
+  cout << endl << "benchmarking done, avg time used: " << accumulate(times_lst.begin(), times_lst.end(), 0.0) / times_lst.size() << endl;
 
   cout << endl << "Step4: clean up all remaining pages" << endl;
   if (total_old_page_unique_count > 0){
