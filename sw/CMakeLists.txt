@@ -28,3 +28,6 @@ find_package(Boost COMPONENTS program_options REQUIRED)
 # Targets
 add_executable(${EXEC} ${SOURCES})
 target_link_libraries(${EXEC} ${Boost_LIBRARIES})
+
+# Run Reset Script
+add_custom_target(reset COMMAND ./hw_reset.sh  WORKING_DIRECTORY ../..)

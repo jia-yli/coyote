@@ -84,7 +84,8 @@ int main(int argc, char *argv[])
   ("gcRatio,g", boost::program_options::value<double>()->default_value(1), "gcCount/nPage")
   ("fullness,f", boost::program_options::value<double>()->default_value(0.5), "fullness of hash table")
   ("throuFactor,t", boost::program_options::value<uint32_t>()->default_value(8), "Store throughput factor")
-  ("nBenchRun,r", boost::program_options::value<uint32_t>()->default_value(2), "Number of bench run");
+  ("nBenchRun,r", boost::program_options::value<uint32_t>()->default_value(2), "Number of bench run")
+  ("verbose,v", boost::program_options::value<uint32_t>()->default_value(1), "print all intermediate results");
   boost::program_options::variables_map commandLineArgs;
   boost::program_options::store(boost::program_options::parse_command_line(argc, argv, programDescription), commandLineArgs);
   boost::program_options::notify(commandLineArgs);
@@ -94,6 +95,7 @@ int main(int argc, char *argv[])
   double hash_table_fullness = commandLineArgs["fullness"].as<double>();
   uint32_t throu_factor = commandLineArgs["throuFactor"].as<uint32_t>();
   uint32_t n_bench_run = commandLineArgs["nBenchRun"].as<uint32_t>();
+  bool verbose = (bool) commandLineArgs["verbose"].as<uint32_t>();
   string output_dir = "/home/jiayli/projects/coyote/sw/examples/dedup_bench2/page_resp";
 
   // checkings
@@ -150,7 +152,7 @@ int main(int argc, char *argv[])
 
   // Step 1: Insert all old and new pages, get SHA3
   cout << endl << "Step1: get all page SHA3, total unique page count: "<< total_page_unique_count << endl;
-  cout << "Preparing unique page data" << endl;
+  verbose && (cout << "Preparing unique page data" << endl);
   char* all_unique_page_buffer = (char*) malloc(total_page_unique_count * pg_size);
   uint32_t* all_unique_page_sha3 = (uint32_t*) malloc(total_page_unique_count * 32); // SHA3 256bit = 32B
   assert(all_unique_page_buffer != NULL);
@@ -162,9 +164,11 @@ int main(int argc, char *argv[])
 
   // support 64x2M page address mapping, do 32 in one insertion round
   ofstream outfile;
-  std::stringstream outfile_name;
-  outfile_name << output_dir << "/resp_" << timeStamp.str() << "_step1.txt";
-  outfile.open(outfile_name.str(), ios::out);
+  if (verbose){
+    std::stringstream outfile_name;
+    outfile_name << output_dir << "/resp_" << timeStamp.str() << "_step1.txt";
+    outfile.open(outfile_name.str(), ios::out);
+  }
   bool allPassed = true;
 
   uint32_t n_insertion_round = (total_page_unique_count + 32 * pg_per_huge_pg - 1) / (32 * pg_per_huge_pg);
@@ -208,22 +212,23 @@ int main(int argc, char *argv[])
       prepGoldenPgIdx[pgIdx] = 100 + pg_idx_start + pgIdx;
     }
 
-    cout << "round " << insertion_rount_idx << " start execution: page " << pg_idx_start << " to " << pg_idx_end << endl;
+    verbose && (cout << "round " << insertion_rount_idx << " start execution: page " << pg_idx_start << " to " << pg_idx_end << endl);
     cproc.setCSR(reinterpret_cast<uint64_t>(prepReqMem), static_cast<uint32_t>(CTLR::RDHOSTADDR));
     cproc.setCSR(reinterpret_cast<uint64_t>(prepRspMem), static_cast<uint32_t>(CTLR::WRHOSTADDR));
     cproc.setCSR(pg_idx_count + prep_instr_pg_num, static_cast<uint32_t>(CTLR::CNT)); // 16 pages in each command batch
     cproc.setCSR(1, static_cast<uint32_t>(CTLR::START));
     sleep(1);
 
-    std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << pg_idx_count + prep_instr_pg_num << std::endl;
-    std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << pg_idx_count << std::endl; 
-
+    if (verbose){
+      std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << pg_idx_count + prep_instr_pg_num << std::endl;
+      std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << pg_idx_count << std::endl; 
+    }
     /** parse and print the page response */
-    cout << "parsing the results" << endl;
+    verbose && (cout << "parsing the results" << endl);
     bool check_res = parse_response(pg_idx_count, prepRspMem, prepGoldenPgIsExec, prepGoldenPgRefCount, prepGoldenPgIdx, 1, outfile);
     allPassed = allPassed && check_res;
     uint32_t* rspMemUInt32 = (uint32_t*) prepRspMem;
-    cout << "get all SHA3" << endl;
+    verbose && (cout << "get all SHA3" << endl);
     for (int i=0; i < pg_idx_count; i++) {
       memcpy(all_unique_page_sha3 + (pg_idx_start + i) * 8, (void*) (rspMemUInt32 + i*16), 32);
     }
@@ -234,14 +239,16 @@ int main(int argc, char *argv[])
     cproc.freeMem(prepRspMem);
   }
   cout << "all page passed?: " << (allPassed ? "True" : "False") << endl;
-  outfile.close();
+  if (verbose){
+    outfile.close();
+  }
 
 
   cout << endl << "Step2: start benchmarking, deletion only" << endl;
   std::vector<double> times_lst;
   cout << n_bench_run << " runs in total" << endl;
   for (int bench_idx = 0; bench_idx < n_bench_run; bench_idx ++){
-    cout << endl << "starting run " << bench_idx + 1 << "/" << n_bench_run << endl;
+    verbose && (cout << endl << "starting run " << bench_idx + 1 << "/" << n_bench_run << endl);
 
     // get page index
     vector<int> benchmark_delete_page_idx_lst;
@@ -313,15 +320,19 @@ int main(int argc, char *argv[])
       cproc.setCSR(1, static_cast<uint32_t>(CTLR::START));
       sleep(1);
 
-      std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << (num_page_to_add_ref + add_ref_instr_pg_num) << std::endl;
-      std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << num_page_to_add_ref << std::endl; 
+      if (verbose){
+        std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << (num_page_to_add_ref + add_ref_instr_pg_num) << std::endl;
+        std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << num_page_to_add_ref << std::endl; 
+      }
 
       ofstream outfile2_1;
-      std::stringstream outfile_name2_1;
-      outfile_name2_1 << output_dir << "/resp_"<< timeStamp.str() << "_step2_1.txt";
-      outfile2_1.open(outfile_name2_1.str(), ios::out);
+      if (verbose){
+        std::stringstream outfile_name2_1;
+        outfile_name2_1 << output_dir << "/resp_"<< timeStamp.str() << "_step2_1.txt";
+        outfile2_1.open(outfile_name2_1.str(), ios::out);
+      }
 
-      cout << "parsing the results" << endl;
+      verbose && (cout << "parsing the results" << endl);
       allPassed = parse_response(num_page_to_add_ref, addRefRspMem, addRefGoldenPgIsExec, addRefGoldenPgRefCount, addRefGoldenPgIdx, 1, outfile2_1);
       cout << "all page passed?: " << (allPassed ? "True" : "False") << endl;
       outfile2_1.close();
@@ -382,19 +393,25 @@ int main(int argc, char *argv[])
     double time = std::chrono::duration_cast<std::chrono::nanoseconds>(end_time - begin_time).count();
     times_lst.push_back(time);
 
-    std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << benchmark_clean_instr_pg_num << std::endl;
-    std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << benchmark_num_page_to_clean << std::endl; 
-    std::cout << "time used: " << time << "ns" << std::endl;
+    if (verbose){
+      std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << benchmark_clean_instr_pg_num << std::endl;
+      std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << benchmark_num_page_to_clean << std::endl; 
+      std::cout << "time used: " << time << "ns" << std::endl;
+    }
 
     ofstream outfile2_2;
-    std::stringstream outfile_name2_2;
-    outfile_name2_2 << output_dir << "/resp_" << timeStamp.str() << "_step2_2.txt";
-    outfile2_2.open(outfile_name2_2.str(), ios::out);
+    if (verbose){
+      std::stringstream outfile_name2_2;
+      outfile_name2_2 << output_dir << "/resp_" << timeStamp.str() << "_step2_2.txt";
+      outfile2_2.open(outfile_name2_2.str(), ios::out);
+    }
 
-    cout << "parsing the results" << endl;
+    verbose && (cout << "parsing the results" << endl);
     allPassed = parse_response(benchmark_num_page_to_clean, benchCleanRspMem, benchCleanGoldenPgIsExec, benchCleanGoldenPgRefCount, benchCleanGoldenPgIdx, 2, outfile2_2);
     cout << "all page passed?: " << (allPassed ? "True" : "False") << endl;
-    outfile2_2.close();
+    if (verbose){
+      outfile2_2.close();
+    }
 
     free(benchCleanGoldenPgIsExec);
     free(benchCleanGoldenPgRefCount);
@@ -447,15 +464,19 @@ int main(int argc, char *argv[])
       cproc.setCSR(1, static_cast<uint32_t>(CTLR::START));
       sleep(1);
 
-      std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << benchmark_insert_pg_num + benchmark_insert_instr_pg_num << std::endl;
-      std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << benchmark_insert_pg_num << std::endl; 
+      if (verbose){
+        std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << benchmark_insert_pg_num + benchmark_insert_instr_pg_num << std::endl;
+        std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << benchmark_insert_pg_num << std::endl; 
+      }
 
       ofstream outfile2_3;
-      std::stringstream outfile_name2_3;
-      outfile_name2_3 << output_dir << "/resp_" << timeStamp.str() << "_step2_3.txt";
-      outfile2_3.open(outfile_name2_3.str(), ios::out);
+      if (verbose){
+        std::stringstream outfile_name2_3;
+        outfile_name2_3 << output_dir << "/resp_" << timeStamp.str() << "_step2_3.txt";
+        outfile2_3.open(outfile_name2_3.str(), ios::out);
+      }
 
-      cout << "parsing the results" << endl;
+      verbose && (cout << "parsing the results" << endl);
       allPassed = parse_response(benchmark_insert_pg_num, benchInsertRspMem, benchInsertGoldenPgIsExec, benchInsertGoldenPgRefCount, benchInsertGoldenPgIdx, 1, outfile2_3);
       cout << "all page passed?: " << (allPassed ? "True" : "False") << endl;
       outfile2_3.close();
@@ -468,7 +489,7 @@ int main(int argc, char *argv[])
     }
   }
 
-  cout << endl << "benchmarking done, avg time used: " << accumulate(times_lst.begin(), times_lst.end(), 0.0) / times_lst.size() << endl;
+  cout << endl << "benchmarking done, avg time used: " << accumulate(times_lst.begin(), times_lst.end(), 0.0) / times_lst.size() << " ns" << endl;
 
   cout << endl << "Step3: clean up all remaining pages" << endl;
   if (total_page_unique_count > 0){
@@ -508,15 +529,19 @@ int main(int argc, char *argv[])
     cproc.setCSR(1, static_cast<uint32_t>(CTLR::START));
     sleep(1);
 
-    std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << final_clean_instr_pg_num << std::endl;
-    std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << final_num_page_to_clean << std::endl; 
+    if (verbose){
+      std::cout << "read page count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::RDDONE)) << "/" << final_clean_instr_pg_num << std::endl;
+      std::cout << "write resp count: " << cproc.getCSR(static_cast<uint32_t>(CTLR::WRDONE)) * 16 << "/" << final_num_page_to_clean << std::endl; 
+    }
 
     ofstream outfile3;
-    std::stringstream outfile_name3;
-    outfile_name3 << output_dir << "/resp_" << timeStamp.str() << "_step3.txt";
-    outfile3.open(outfile_name3.str(), ios::out);
+    if (verbose){
+      std::stringstream outfile_name3;
+      outfile_name3 << output_dir << "/resp_" << timeStamp.str() << "_step3.txt";
+      outfile3.open(outfile_name3.str(), ios::out);
+    }
 
-    cout << "parsing the results" << endl;
+    verbose && (cout << "parsing the results" << endl);
     allPassed = parse_response(final_num_page_to_clean, finalCleanRspMem, finalCleanGoldenPgIsExec, finalCleanGoldenPgRefCount, finalCleanGoldenPgIdx, 2, outfile3);
     cout << "all page passed?: " << (allPassed ? "True" : "False") << endl;
     outfile3.close();
